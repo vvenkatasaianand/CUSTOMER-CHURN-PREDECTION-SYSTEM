@@ -1,0 +1,618 @@
+CUSTOMER CHURN PREDICTION SYSTEM
+DOCUMENTATION SAMPLE CODE
+
+The following snippets are based on the actual project implementation.
+They are shortened and documentation-friendly, so they can be pasted
+directly into a major project report on A4 paper.
+
+======================================================================
+1. FRONTEND WORKFLOW CONTROLLER
+File reference: src/App.tsx
+Purpose: Controls the full wizard flow from upload to final prediction.
+======================================================================
+
+```tsx
+import React, { useEffect, useMemo, useState } from "react";
+import FileUpload from "./components/FileUpload";
+import DataPreprocessing from "./components/DataPreprocessing";
+import ModelTraining from "./components/ModelTraining";
+import PredictionForm from "./components/PredictionForm";
+import PredictionResults from "./components/PredictionResults";
+import api from "./services/api";
+
+type Step = "upload" | "preprocess" | "train" | "predict" | "results";
+
+export default function App() {
+  const [step, setStep] = useState<Step>("upload");
+  const [datasetInfo, setDatasetInfo] = useState(null);
+  const [preprocessInfo, setPreprocessInfo] = useState(null);
+  const [trainInfo, setTrainInfo] = useState(null);
+  const [schemaInfo, setSchemaInfo] = useState(null);
+  const [predictInfo, setPredictInfo] = useState(null);
+
+  const uploadId = datasetInfo?.upload_id ?? null;
+  const modelId = trainInfo?.model_id ?? null;
+
+  const startTraining = async () => {
+    const response = await api.trainModelStream({
+      upload_id: uploadId,
+      target_column: preprocessInfo.target_column,
+      excluded_columns: [],
+      model_name: "xgboost",
+    });
+    setTrainInfo(response);
+    setStep("train");
+  };
+
+  useEffect(() => {
+    async function loadSchema() {
+      if (!modelId) return;
+      const schema = await api.getModelSchema(modelId);
+      setSchemaInfo(schema);
+    }
+    loadSchema();
+  }, [modelId]);
+
+  return (
+    <>
+      {step === "upload" && (
+        <FileUpload onUploaded={(info) => {
+          setDatasetInfo(info);
+          setStep("preprocess");
+        }} />
+      )}
+
+      {step === "preprocess" && uploadId && (
+        <DataPreprocessing
+          uploadId={uploadId}
+          datasetInfo={datasetInfo}
+          onBack={() => setStep("upload")}
+          onPreprocessed={(info) => {
+            setPreprocessInfo(info);
+            setStep("train");
+          }}
+        />
+      )}
+
+      {step === "train" && uploadId && preprocessInfo && (
+        <ModelTraining
+          uploadId={uploadId}
+          preprocessInfo={preprocessInfo}
+          onBack={() => setStep("preprocess")}
+          onStartTraining={startTraining}
+          trainInfo={trainInfo}
+          onNext={() => setStep("predict")}
+        />
+      )}
+
+      {step === "predict" && modelId && (
+        <PredictionForm
+          modelId={modelId}
+          schemaInfo={schemaInfo}
+          onBack={() => setStep("train")}
+          onPredicted={(result) => {
+            setPredictInfo(result);
+            setStep("results");
+          }}
+        />
+      )}
+
+      {step === "results" && predictInfo && (
+        <PredictionResults
+          result={predictInfo}
+          trainingInfo={trainInfo}
+          uploadId={uploadId}
+          onBack={() => setStep("predict")}
+          onNewPrediction={() => setStep("predict")}
+        />
+      )}
+    </>
+  );
+}
+```
+
+Explanation:
+This React component manages the complete user workflow. It stores
+dataset details, preprocessing output, training results, model schema,
+and prediction results, and it renders the correct screen for each step.
+
+======================================================================
+2. FRONTEND API SERVICE LAYER
+File reference: src/services/api.ts
+Purpose: Connects the React frontend with the FastAPI backend.
+======================================================================
+
+```ts
+import { http } from "./http";
+import { apiUrl } from "../config/env";
+
+const api = {
+  async uploadDataset(file: File) {
+    const form = new FormData();
+    form.append("file", file);
+
+    return await http.request({
+      method: "POST",
+      path: "/datasets/upload",
+      rawBody: true,
+      body: form,
+    });
+  },
+
+  async preprocessDataset(payload: any) {
+    return await http.request({
+      method: "POST",
+      path: "/datasets/preprocess",
+      body: payload,
+    });
+  },
+
+  async getModelSchema(modelId: string) {
+    return await http.request({
+      method: "GET",
+      path: `/models/schema/${encodeURIComponent(modelId)}`,
+    });
+  },
+
+  async trainModelStream(payload: any, onProgress?: (pct: number, message?: string) => void) {
+    const res = await fetch(apiUrl("/models/train/stream"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+      body: JSON.stringify(payload),
+    });
+
+    const reader = res.body!.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    return new Promise((resolve, reject) => {
+      const pump = () => {
+        reader.read().then(({ value, done }) => {
+          if (done) return reject(new Error("Training stream ended unexpectedly."));
+          buffer += decoder.decode(value, { stream: true });
+
+          let idx = buffer.indexOf("\n\n");
+          while (idx >= 0) {
+            const raw = buffer.slice(0, idx).trim();
+            buffer = buffer.slice(idx + 2);
+
+            const lines = raw.split(/\r?\n/);
+            let event = "message";
+            const dataLines: string[] = [];
+
+            for (const line of lines) {
+              if (line.startsWith("event:")) event = line.slice(6).trim();
+              else if (line.startsWith("data:")) dataLines.push(line.slice(5).trim());
+            }
+
+            const data = JSON.parse(dataLines.join("\n"));
+            if (event === "progress") onProgress?.(data.pct, data.message);
+            if (event === "complete") return resolve(data);
+            if (event === "error") return reject(new Error(data.message));
+
+            idx = buffer.indexOf("\n\n");
+          }
+          pump();
+        });
+      };
+      pump();
+    });
+  },
+};
+
+export default api;
+```
+
+Explanation:
+The API service handles dataset upload, preprocessing requests, schema
+loading, and training through Server-Sent Events (SSE). This allows the
+frontend to display live progress during model training.
+
+======================================================================
+3. DATASET UPLOAD AND PREPROCESSING
+File reference: backend/app/services/dataset_service.py
+Purpose: Validates the dataset, extracts metadata, and stores processed data.
+======================================================================
+
+```python
+from dataclasses import dataclass
+import pandas as pd
+
+@dataclass(frozen=True)
+class DatasetService:
+    settings: object
+    dataset_store: object
+    metadata_store: object
+
+    async def upload_dataset(self, file):
+        upload_id = "generated_upload_id"
+        saved_path = await self.dataset_store.save_upload(upload_id=upload_id, file=file)
+        df = self.dataset_store.load_dataframe(saved_path)
+
+        info = {
+            "upload_id": upload_id,
+            "filename": file.filename,
+            "shape": [int(df.shape[0]), int(df.shape[1])],
+            "columns": self._build_columns_info(df),
+        }
+
+        self.metadata_store.write_upload_metadata(upload_id, info)
+        return info
+
+    async def preprocess_dataset(self, req):
+        df = self.dataset_store.load_dataframe(self.dataset_store.get_upload_path(req.upload_id))
+
+        if req.target_column not in df.columns:
+            raise ValueError("Invalid target column")
+
+        excluded = set(req.excluded_columns)
+        excluded.discard(req.target_column)
+
+        feature_columns = [
+            c for c in df.columns.tolist()
+            if c != req.target_column and c not in excluded
+        ]
+
+        df = df.dropna(subset=[req.target_column])
+        processed_path = self.dataset_store.save_processed(upload_id=req.upload_id, df=df)
+
+        self.metadata_store.write_preprocess_metadata(req.upload_id, {
+            "target_column": req.target_column,
+            "feature_columns": feature_columns,
+            "processed_path": str(processed_path),
+        })
+
+        return {
+            "upload_id": req.upload_id,
+            "target_column": req.target_column,
+            "feature_columns": feature_columns,
+            "shape": [int(df.shape[0]), int(df.shape[1])],
+            "preview": df.head(10).to_dict(orient="records"),
+        }
+```
+
+Explanation:
+This service receives the uploaded dataset, reads it using pandas,
+creates column metadata, and stores upload information. During
+preprocessing, it removes invalid rows, saves the cleaned dataset,
+and records the selected target and feature columns for training.
+
+======================================================================
+4. MACHINE LEARNING PIPELINE CONSTRUCTION
+File reference: backend/app/ml/pipeline.py
+Purpose: Builds a preprocessing + XGBoost training pipeline.
+======================================================================
+
+```python
+from sklearn.compose import ColumnTransformer
+from sklearn.impute import SimpleImputer
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OneHotEncoder
+from xgboost import XGBClassifier
+
+def build_schema(X):
+    fields = []
+    for col in X.columns.tolist():
+        dtype = "number" if str(X[col].dtype).startswith(("int", "float")) else "string"
+        fields.append({
+            "name": str(col),
+            "dtype": dtype,
+            "required": True,
+            "allowed_values": None,
+        })
+    return {"fields": fields}
+
+def build_xgb_pipeline(X, random_seed):
+    numeric_features = [c for c in X.columns if X[c].dtype.kind in "if"]
+    categorical_features = [c for c in X.columns if c not in numeric_features]
+
+    numeric_transformer = Pipeline(steps=[
+        ("imputer", SimpleImputer(strategy="median"))
+    ])
+
+    categorical_transformer = Pipeline(steps=[
+        ("imputer", SimpleImputer(strategy="most_frequent")),
+        ("onehot", OneHotEncoder(handle_unknown="ignore", sparse_output=False)),
+    ])
+
+    preprocessor = ColumnTransformer(
+        transformers=[
+            ("num", numeric_transformer, numeric_features),
+            ("cat", categorical_transformer, categorical_features),
+        ]
+    )
+
+    model = XGBClassifier(
+        n_estimators=300,
+        max_depth=4,
+        learning_rate=0.05,
+        random_state=random_seed,
+        eval_metric="logloss",
+    )
+
+    return Pipeline(steps=[("preprocess", preprocessor), ("model", model)])
+```
+
+Explanation:
+The pipeline performs data preprocessing and model training in one
+consistent structure. Numeric columns are filled using median values,
+categorical columns are encoded using one-hot encoding, and the final
+classifier is an XGBoost model.
+
+======================================================================
+5. MODEL TRAINING SERVICE
+File reference: backend/app/services/training_service.py
+Purpose: Loads preprocessed data, trains the model, evaluates it, and saves metadata.
+======================================================================
+
+```python
+from dataclasses import dataclass
+from app.ml.trainer import train_xgb_pipeline
+
+@dataclass(frozen=True)
+class TrainingService:
+    settings: object
+    dataset_store: object
+    model_store: object
+    metadata_store: object
+
+    def train_model(self, req):
+        prep = self.metadata_store.read_preprocess_metadata(req.upload_id)
+        processed_path = prep["processed_path"]
+
+        df = self.dataset_store.load_processed_dataframe(processed_path)
+        feature_columns = prep["feature_columns"]
+        target_column = prep["target_column"]
+
+        X = df[feature_columns].copy()
+        y = df[target_column].copy()
+
+        trained = train_xgb_pipeline(
+            X=X,
+            y=y,
+            random_seed=self.settings.random_seed,
+            test_size=self.settings.test_size,
+        )
+
+        model_id = "generated_model_id"
+        artifact_path = self.model_store.save_model(model_id=model_id, model_object=trained.pipeline)
+
+        self.metadata_store.write_model_metadata(model_id, {
+            "model_id": model_id,
+            "target_column": target_column,
+            "feature_columns": feature_columns,
+            "artifact_path": str(artifact_path),
+            "schema": trained.schema,
+            "metrics": trained.metrics,
+            "feature_importance": trained.feature_importance,
+        })
+
+        return {
+            "model_id": model_id,
+            "model_name": "xgboost",
+            "target_column": target_column,
+            "feature_columns": feature_columns,
+            "metrics": trained.metrics,
+            "confusion_matrix": trained.confusion_matrix,
+            "feature_importance": trained.feature_importance,
+        }
+```
+
+Explanation:
+The training service reads the processed dataset, separates features and
+target labels, trains the XGBoost pipeline, saves the trained model to
+disk, and stores schema and evaluation details for later prediction use.
+
+======================================================================
+6. MODEL TRAINING LOGIC
+File reference: backend/app/ml/trainer.py
+Purpose: Splits the dataset, trains the pipeline, and calculates metrics.
+======================================================================
+
+```python
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+from sklearn.metrics import confusion_matrix, roc_auc_score, average_precision_score
+from sklearn.model_selection import train_test_split
+
+def train_xgb_pipeline(X, y, random_seed, test_size):
+    X_train, X_test, y_train, y_test = train_test_split(
+        X,
+        y,
+        test_size=float(test_size),
+        random_state=int(random_seed),
+        stratify=y,
+    )
+
+    pipeline = build_xgb_pipeline(X_train, random_seed=int(random_seed))
+    pipeline.fit(X_train, y_train)
+
+    y_pred = pipeline.predict(X_test)
+    y_prob = pipeline.predict_proba(X_test)[:, 1]
+
+    metrics = {
+        "accuracy": float(accuracy_score(y_test, y_pred)),
+        "precision": float(precision_score(y_test, y_pred, zero_division=0)),
+        "recall": float(recall_score(y_test, y_pred, zero_division=0)),
+        "f1": float(f1_score(y_test, y_pred, zero_division=0)),
+        "roc_auc": float(roc_auc_score(y_test, y_prob)),
+        "pr_auc": float(average_precision_score(y_test, y_prob)),
+    }
+
+    return {
+        "pipeline": pipeline,
+        "schema": build_schema(X),
+        "metrics": metrics,
+        "confusion_matrix": confusion_matrix(y_test, y_pred, labels=[0, 1]).tolist(),
+        "feature_importance": [],
+    }
+```
+
+Explanation:
+This code performs the core machine learning work. It splits the dataset
+into training and testing subsets, trains the XGBoost pipeline, and
+measures the model using accuracy, precision, recall, F1-score, ROC-AUC,
+and PR-AUC.
+
+======================================================================
+7. PREDICTION AND RISK ANALYSIS
+File reference: backend/app/services/prediction_service.py
+Purpose: Uses the trained model to predict churn probability and business risk.
+======================================================================
+
+```python
+from dataclasses import dataclass
+import pandas as pd
+
+@dataclass(frozen=True)
+class PredictionService:
+    settings: object
+    dataset_store: object
+    model_store: object
+    metadata_store: object
+
+    def predict(self, req):
+        meta = self.metadata_store.read_model_metadata(req.model_id)
+        feature_columns = meta["feature_columns"]
+        pipeline = self.model_store.load_model(req.model_id)
+
+        row = {col: req.input_data[col] for col in feature_columns}
+        df = pd.DataFrame([row], columns=feature_columns)
+
+        pred = pipeline.predict(df)[0]
+        prob = float(pipeline.predict_proba(df)[:, 1][0])
+        risk_level = self._risk_from_probability(prob)
+
+        return {
+            "model_id": req.model_id,
+            "prediction": int(pred),
+            "probability": prob,
+            "risk_level": risk_level,
+            "recommended_actions": self._deterministic_actions(risk_level),
+        }
+
+    def _risk_from_probability(self, probability):
+        if probability < 0.33:
+            return "Low"
+        if probability < 0.66:
+            return "Medium"
+        return "High"
+
+    def _deterministic_actions(self, risk_level):
+        if risk_level == "High":
+            return ["Retention call", "Offer discount", "Immediate follow-up"]
+        if risk_level == "Medium":
+            return ["Send engagement mail", "Monitor activity"]
+        return ["Normal communication", "Periodic monitoring"]
+```
+
+Explanation:
+This module loads the saved model and model metadata, converts user input
+into a single-row DataFrame, predicts churn probability, classifies the
+risk level, and returns recommended retention actions.
+
+======================================================================
+8. DYNAMIC PREDICTION FORM
+File reference: src/components/PredictionForm.tsx
+Purpose: Builds the prediction screen automatically from backend schema.
+======================================================================
+
+```tsx
+import React, { useEffect, useState } from "react";
+import api from "../services/api";
+
+export default function PredictionForm({ modelId, schemaInfo, onPredicted }: any) {
+  const [form, setForm] = useState<Record<string, any>>({});
+  const fields = schemaInfo?.fields ?? [];
+
+  useEffect(() => {
+    const initialState: Record<string, any> = {};
+    for (const field of fields) {
+      initialState[field.name] = field.example ?? "";
+    }
+    setForm(initialState);
+  }, [fields]);
+
+  const setField = (name: string, value: any) => {
+    setForm((prev) => ({ ...prev, [name]: value }));
+  };
+
+  const handleSubmit = async () => {
+    const result = await api.predictStream({
+      model_id: modelId,
+      input_data: form,
+    });
+    onPredicted(result);
+  };
+
+  return (
+    <div>
+      {fields.map((field: any) => (
+        <div key={field.name}>
+          <label>{field.name}</label>
+          <input
+            type={field.dtype === "number" ? "number" : "text"}
+            value={form[field.name] ?? ""}
+            onChange={(e) => setField(field.name, e.target.value)}
+          />
+        </div>
+      ))}
+
+      <button onClick={handleSubmit}>Predict</button>
+    </div>
+  );
+}
+```
+
+Explanation:
+The prediction page is not hardcoded. It is generated dynamically from
+the schema created during model training. This makes the system flexible
+for different customer churn datasets with different feature sets.
+
+======================================================================
+9. FASTAPI MODEL ROUTES
+File reference: backend/app/api/routes/models.py
+Purpose: Exposes training, schema, and prediction endpoints to the frontend.
+======================================================================
+
+```python
+from fastapi import APIRouter
+from fastapi.responses import StreamingResponse
+
+router = APIRouter()
+
+@router.post("/train")
+async def train_model(request, svc):
+    return await svc.train_model(request)
+
+@router.post("/train/stream")
+async def train_model_stream(request, svc):
+    async def event_stream():
+        yield 'event: progress\\ndata: {"pct": 25, "message": "Starting"}\\n\\n'
+        result = svc.train_model_with_progress(request, lambda pct, msg: None)
+        yield f"event: complete\\ndata: {result.model_dump_json()}\\n\\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+@router.get("/schema/{model_id}")
+async def model_schema(model_id, svc):
+    return svc.get_model_schema(model_id)
+
+@router.post("/predict")
+async def predict(request, svc):
+    return await svc.predict(request)
+```
+
+Explanation:
+These routes connect the user interface with backend services. They
+provide model training, schema loading, and prediction endpoints, and
+they also support live streaming progress during long operations.
+
+======================================================================
+10. CONCLUSION
+======================================================================
+
+This project combines React, FastAPI, pandas, scikit-learn, and XGBoost
+to create an end-to-end customer churn prediction platform. The frontend
+guides the user through upload, preprocessing, training, and prediction,
+while the backend manages data storage, model training, inference,
+evaluation metrics, and explainable business outputs.
