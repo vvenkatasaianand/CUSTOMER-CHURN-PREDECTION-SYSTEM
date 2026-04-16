@@ -24,13 +24,6 @@ If you want the shortest path to understand the backend, open these files in thi
 5. [backend/app/services/prediction_service.py](backend/app/services/prediction_service.py)
 6. [backend/app/ml/predictor.py](backend/app/ml/predictor.py)
 
-## Quick Open in VS Code
-
-To open any file quickly in VS Code:
-
-- Press `Ctrl+P`
-- Paste the relative path, for example: `backend/app/ml/pipeline.py`
-
 ## 1. App Startup and Flow Entry
 
 **File Name:** `main.py`  
