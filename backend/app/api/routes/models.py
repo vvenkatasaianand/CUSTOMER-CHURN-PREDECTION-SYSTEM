@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Model-facing HTTP routes: training, schema lookup, summaries, and prediction."""
+
 import asyncio
 import json
 import threading
@@ -28,6 +30,7 @@ logger = get_logger(__name__)
 
 
 def get_training_service(settings: Settings = Depends(get_settings)) -> TrainingService:
+    # Training needs raw/processed dataset access, model artifact storage, and metadata storage.
     dataset_store = DatasetStore(settings=settings)
     model_store = ModelStore(settings=settings)
     metadata_store = MetadataStore(settings=settings)
@@ -35,6 +38,7 @@ def get_training_service(settings: Settings = Depends(get_settings)) -> Training
 
 
 def get_prediction_service(settings: Settings = Depends(get_settings)) -> PredictionService:
+    # Prediction loads the persisted model artifact and the metadata saved during training.
     dataset_store = DatasetStore(settings=settings)
     model_store = ModelStore(settings=settings)
     metadata_store = MetadataStore(settings=settings)
@@ -42,11 +46,13 @@ def get_prediction_service(settings: Settings = Depends(get_settings)) -> Predic
 
 
 def get_schema_service(settings: Settings = Depends(get_settings)) -> SchemaService:
+    # Schema lookup is metadata-only; no need to touch the model artifact itself here.
     metadata_store = MetadataStore(settings=settings)
     return SchemaService(settings=settings, metadata_store=metadata_store)
 
 
 def get_insights_service(settings: Settings = Depends(get_settings)) -> InsightsService:
+    # Training summaries read saved metrics/features and may also use dataset metadata.
     dataset_store = DatasetStore(settings=settings)
     model_store = ModelStore(settings=settings)
     metadata_store = MetadataStore(settings=settings)
@@ -75,6 +81,7 @@ async def train_model(
 
 
 def _sse_event(event: str, data: Dict[str, Any]) -> str:
+    # Format events exactly as Server-Sent Events expects: "event" line + "data" line + blank line.
     return f"event: {event}\ndata: {json.dumps(data)}\n\n"
 
 
@@ -90,10 +97,12 @@ async def train_model_stream(
       - complete: TrainResponse payload
       - error: { message, code?, details? }
     """
+    # Use an asyncio queue as the bridge between the worker thread and the async response stream.
     queue: asyncio.Queue[Tuple[str, Dict[str, Any]]] = asyncio.Queue()
     loop = asyncio.get_running_loop()
 
     def emit_progress(pct: int, message: str) -> None:
+        # loop.call_soon_threadsafe lets the background thread safely push into the async queue.
         loop.call_soon_threadsafe(queue.put_nowait, ("progress", {"pct": pct, "message": message}))
 
     def run_training() -> None:
@@ -115,6 +124,7 @@ async def train_model_stream(
         finally:
             loop.call_soon_threadsafe(queue.put_nowait, ("done", {}))
 
+    # Run CPU-heavy training outside the event loop so streaming stays responsive.
     threading.Thread(target=run_training, daemon=True).start()
 
     async def event_stream():
@@ -138,6 +148,7 @@ async def model_schema(
     Legacy compatibility:
     - Frontend calls GET /schema/{model_id}
     """
+    # Frontend uses this schema to build the prediction form dynamically.
     return svc.get_model_schema(model_id)
 
 
@@ -149,6 +160,7 @@ async def model_summary(
     """
     Generate an LLM-assisted summary of training outcomes and top features.
     """
+    # This is a read-only summary endpoint; it does not retrain or mutate the model.
     return await svc.training_summary(model_id)
 
 
@@ -179,6 +191,7 @@ async def predict_stream(
       - complete: PredictResponse payload
       - error: { message, code?, details? }
     """
+    # Prediction is lighter than training, but we keep the same SSE pattern for consistent UI behavior.
     queue: asyncio.Queue[Tuple[str, Dict[str, Any]]] = asyncio.Queue()
     loop = asyncio.get_running_loop()
 

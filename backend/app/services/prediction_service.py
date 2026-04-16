@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Service layer for running a saved model on one customer record and explaining the result."""
+
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -73,7 +75,7 @@ class PredictionService:
         _emit(15, "Loading model")
         pipeline = self.model_store.load_model(req.model_id)
 
-        # Build a single-row dataframe in the exact feature order
+        # Build a single-row dataframe in the exact feature order used during training.
         row: Dict[str, Any] = {}
         missing: List[str] = []
         _emit(25, "Preparing input features")
@@ -96,6 +98,7 @@ class PredictionService:
 
         _emit(45, "Running prediction")
         try:
+            # predict_with_pipeline returns both the binary class and probability of churn=1.
             pred_label, prob = predict_with_pipeline(pipeline=pipeline, X=df)
         except AppError:
             raise
@@ -110,6 +113,7 @@ class PredictionService:
         risk_level: RiskLevel = self._risk_from_probability(prob)
 
         _emit(60, "Computing key factors")
+        # Prefer per-prediction contributions so the explanation refers to this exact customer.
         key_factors = self._compute_key_factors(
             pipeline=pipeline,
             df=df,
@@ -125,6 +129,7 @@ class PredictionService:
             llm_model_name=LLMService(settings=self.settings).model_name(),
         )
         _emit(90, "Building recommendations")
+        # Recommended actions are deterministic business rules based only on the risk bucket.
         actions = self._deterministic_actions(risk_level=risk_level)
 
         _emit(95, "Finalizing response")
@@ -179,6 +184,7 @@ class PredictionService:
         #     f"FACTS={facts}"
         # )
 
+        # The prompt is tightly constrained so the LLM explains the model output instead of inventing new facts.
         prompt = (
             "You are an experienced data analyst interpreting a risk assessment summary. "
             "Use ONLY the facts provided below. Do not introduce new features, metrics, or numbers. "
@@ -220,7 +226,7 @@ class PredictionService:
         key_factors: List[PredictionFactor],
         llm_model_name: str,
     ) -> PredictionExplanation:
-        # No LLM. Keep it short, academic-friendly, deterministic.
+        # No LLM available: still return a stable explanation so prediction results remain usable.
         factor_names = [f.feature for f in key_factors[:2]]
         factor_clause = ""
         if factor_names:
@@ -241,7 +247,7 @@ class PredictionService:
         )
 
     def _deterministic_actions(self, risk_level: RiskLevel) -> List[RecommendedAction]:
-        # No LLM. These are rule-based actions purely by risk bucket.
+        # No LLM here either; actions are simple business rules chosen by risk bucket.
         if risk_level == "High":
             return [
                 RecommendedAction(
@@ -301,12 +307,12 @@ class PredictionService:
         model_meta: Dict[str, Any],
         top_k: int = 5,
     ) -> List[PredictionFactor]:
-        # Prefer per-prediction contributions (tree SHAP via XGBoost pred_contribs)
+        # Prefer per-prediction contributions (tree SHAP-style values via XGBoost pred_contribs).
         contribs = self._xgb_pred_contribs(pipeline, df, feature_columns, top_k=top_k)
         if contribs:
             return contribs
 
-        # Fallback: global feature importance (if available in metadata)
+        # Fallback: use global feature importance saved during training if local contributions fail.
         fi_raw = model_meta.get("feature_importance") or []
         factors: List[PredictionFactor] = []
         for item in fi_raw[:top_k]:
@@ -360,11 +366,12 @@ class PredictionService:
 
         if len(row) <= 1:
             return []
-        # Last term is bias
+        # The last contribution term is the model bias, not a feature, so exclude it.
         feature_contribs = row[:-1]
 
         aggregated: Dict[str, float] = {}
         for name, val in zip(feature_names, feature_contribs):
+            # One-hot encoded columns are mapped back to their original base feature for readability.
             base = self._map_base_feature(name, feature_columns)
             aggregated[base] = aggregated.get(base, 0.0) + float(val)
 

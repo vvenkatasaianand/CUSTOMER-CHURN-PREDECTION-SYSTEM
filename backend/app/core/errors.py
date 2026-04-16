@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Shared application error type plus FastAPI exception handlers."""
+
 import uuid
 from typing import Any, Dict, Optional
 
@@ -35,12 +37,14 @@ class AppError(Exception):
 
 
 def _trace_id() -> str:
+    # Trace IDs make it easier to match a client-facing error with a server log entry.
     return str(uuid.uuid4())
 
 
 def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(AppError)
     async def app_error_handler(request: Request, exc: AppError):
+        # Controlled errors preserve the original message/code/details for the client.
         tid = _trace_id()
         logger.warning(
             "app_error",
@@ -83,6 +87,7 @@ def register_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(Exception)
     async def unhandled_error_handler(request: Request, exc: Exception):
+        # Unexpected exceptions are hidden behind a generic 500 to avoid leaking internals.
         tid = _trace_id()
         logger.exception(
             "unhandled_error",

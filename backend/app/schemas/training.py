@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Schemas for training requests, training metrics, and training results."""
+
 from typing import List, Optional
 
 from pydantic import BaseModel, Field
@@ -18,6 +20,7 @@ class FeatureSelectionRequest(BaseModel):
 
 
 class TrainRequest(BaseModel):
+    # The current backend only supports xgboost, but model_name stays explicit for future expansion.
     upload_id: str
     target_column: str
     excluded_columns: List[str] = Field(default_factory=list)
@@ -25,6 +28,7 @@ class TrainRequest(BaseModel):
 
 
 class TrainingMetrics(BaseModel):
+    # These metrics are computed on the held-out test split after training completes.
     accuracy: NumericMetric
     precision: NumericMetric
     recall: NumericMetric
@@ -35,6 +39,7 @@ class TrainingMetrics(BaseModel):
 
 
 class TrainResponse(BaseModel):
+    # Full payload returned after a successful training run.
     status: str = "success"
     model_id: str
     model_name: str

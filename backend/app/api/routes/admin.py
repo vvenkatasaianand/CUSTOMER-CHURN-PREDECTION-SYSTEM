@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Development/demo maintenance routes such as clearing runtime artifacts."""
+
 import shutil
 from pathlib import Path
 from typing import Dict, Tuple
@@ -33,6 +35,7 @@ def _safe_clear_dir(dir_path: Path) -> Tuple[int, int]:
     files_deleted = 0
     dirs_deleted = 0
 
+    # Only delete children; keeping the parent directory avoids later startup surprises.
     for child in dir_path.iterdir():
         # Never follow symlinks out of the sandbox; remove the link itself.
         if child.is_symlink():
@@ -65,6 +68,7 @@ def reset_runtime_state(
     - This is intended for development/demo resets.
     - It only deletes contents inside configured runtime folders.
     """
+    # Build the exact folders we allow this endpoint to clear.
     targets = {
         "uploads": Path(settings.uploads_dir),
         "processed": Path(settings.processed_dir),
@@ -75,6 +79,7 @@ def reset_runtime_state(
 
     summary: Dict[str, Dict[str, int]] = {}
     try:
+        # Clear each runtime folder independently so the response can report what changed.
         for name, path in targets.items():
             files_deleted, dirs_deleted = _safe_clear_dir(path)
             summary[name] = {"files_deleted": files_deleted, "dirs_deleted": dirs_deleted}
@@ -88,5 +93,6 @@ def reset_runtime_state(
             details={"error": str(e)},
         )
 
+    # Return a compact human-readable summary for the UI toast/message area.
     parts = [f"{k}: {v['files_deleted']} files, {v['dirs_deleted']} dirs" for k, v in summary.items()]
     return MessageResponse(message="Reset completed. " + " | ".join(parts))

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Disk-backed storage helper for raw uploads and processed dataset files."""
+
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -32,6 +34,7 @@ class DatasetStore:
         return csv_path
 
     async def save_upload(self, upload_id: str, file: UploadFile) -> Path:
+        # Preserve only the file extension; the internal upload ID becomes the real stored filename.
         filename = (file.filename or "").lower().strip()
         ext = ".csv" if filename.endswith(".csv") else ".json" if filename.endswith(".json") else ""
         if ext not in (".csv", ".json"):
@@ -45,6 +48,7 @@ class DatasetStore:
         max_bytes = int(self.settings.max_upload_mb) * 1024 * 1024
 
         try:
+            # Stream the upload straight to disk to avoid holding large files in memory.
             await atomic_write_stream(upload_file=file, dest_path=dest, max_bytes=max_bytes)
         except AppError:
             raise
@@ -64,7 +68,7 @@ class DatasetStore:
         if ext == ".csv":
             return pd.read_csv(path)
         if ext == ".json":
-            # Support JSON records-style or array style
+            # Support JSON records-style or array style as long as pandas can infer it.
             return pd.read_json(path, orient=None)
         raise AppError(
             "Unsupported dataset format on server.",
@@ -74,11 +78,13 @@ class DatasetStore:
         )
 
     def save_processed(self, upload_id: str, df: pd.DataFrame) -> Path:
+        # Parquet is compact and reloads with schema information better than CSV.
         dest = safe_join(Path(self.settings.processed_dir), f"{upload_id}.parquet")
         df.to_parquet(dest, index=False)
         return dest
 
     def load_processed_dataframe(self, path: Path) -> pd.DataFrame:
+        # Processed data should always be parquet because preprocess writes it in that format.
         if path.suffix.lower() != ".parquet":
             raise AppError(
                 "Processed dataset must be parquet.",
@@ -90,6 +96,7 @@ class DatasetStore:
 
     def safe_delete(self, path: Path) -> None:
         try:
+            # Best-effort cleanup only; upload failure should not be blocked by cleanup failure.
             if path.exists() and path.is_file():
                 path.unlink(missing_ok=True)
         except Exception:

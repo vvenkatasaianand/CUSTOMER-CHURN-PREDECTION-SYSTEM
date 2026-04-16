@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Service layer for dataset upload and preprocessing before model training."""
+
 from dataclasses import dataclass
 from typing import Any, Dict, List, Tuple
 
@@ -23,10 +25,12 @@ class DatasetService:
     metadata_store: MetadataStore
 
     async def upload_dataset(self, file: UploadFile) -> DatasetInfo:
+        # Create a stable internal ID so later steps can refer to this upload without using filenames.
         upload_id = new_id(prefix="upl")
         saved_path = await self.dataset_store.save_upload(upload_id=upload_id, file=file)
 
         try:
+            # Parse immediately so invalid files fail early instead of later in the workflow.
             df = self.dataset_store.load_dataframe(saved_path)
         except Exception as e:
             # Cleanup invalid uploads
@@ -47,13 +51,13 @@ class DatasetService:
             columns=columns,
         )
 
-        # Persist dataset info for later steps (preprocess/train)
+        # Persist dataset info so preprocess/train steps can reload metadata without reparsing the file.
         self.metadata_store.write_upload_metadata(upload_id, info.model_dump())
 
         return info
 
     async def preprocess_dataset(self, req: PreprocessRequest) -> PreprocessResponse:
-        # Validate upload exists
+        # Validate upload exists before touching any file paths on disk.
         upload_meta = self.metadata_store.read_upload_metadata(req.upload_id)
         if upload_meta is None:
             raise AppError(
@@ -72,6 +76,7 @@ class DatasetService:
 
         df = self.dataset_store.load_dataframe(raw_path)
 
+        # Target column is required because the rest of the pipeline assumes supervised learning.
         if req.target_column not in df.columns:
             raise AppError(
                 f"Target column '{req.target_column}' not found in dataset.",
@@ -85,6 +90,7 @@ class DatasetService:
         if req.target_column in excluded:
             excluded.remove(req.target_column)
 
+        # Features are simply "all remaining columns except target and excluded fields".
         feature_columns = [c for c in df.columns.tolist() if c != req.target_column and c not in excluded]
         if not feature_columns:
             raise AppError(
@@ -100,12 +106,13 @@ class DatasetService:
 
         notes: List[str] = []
         if after_rows < before_rows:
+            # Keep a readable note so the UI can explain why row count changed after preprocess.
             notes.append(f"Dropped {before_rows - after_rows} rows with null target values.")
 
         # Store processed dataset as Parquet for faster reload and typed storage
         processed_path = self.dataset_store.save_processed(upload_id=req.upload_id, df=df)
 
-        # Persist preprocess metadata (used by training)
+        # Persist exactly what training needs so training can be restarted without recomputing preprocess.
         self.metadata_store.write_preprocess_metadata(
             req.upload_id,
             {
@@ -131,13 +138,14 @@ class DatasetService:
 
     def _preview_rows(self, df: pd.DataFrame, max_rows: int = 10) -> List[Dict[str, Any]]:
         try:
-            # Convert NaN to None for JSON friendliness
+            # Convert NaN to None so preview rows serialize cleanly in JSON responses.
             preview_df = df.head(max_rows).copy()
             return preview_df.where(pd.notnull(preview_df), None).to_dict(orient="records")
         except Exception:
             return []
 
     def _build_columns_info(self, df: pd.DataFrame) -> List[ColumnInfo]:
+        # Build lightweight column metadata so the frontend can guide target/feature selection.
         infos: List[ColumnInfo] = []
         for col in df.columns.tolist():
             series = df[col]
@@ -161,7 +169,7 @@ class DatasetService:
         return infos
 
     def _json_safe(self, v: Any) -> Any:
-        # Handle numpy/pandas scalars
+        # Handle numpy/pandas scalars before sending values back in API responses.
         try:
             if pd.isna(v):
                 return None

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Schemas for dataset upload, preprocess responses, and dynamic prediction form definitions."""
+
 from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
@@ -28,12 +30,14 @@ class DatasetCreateResponse(BaseModel):
 
 
 class PreprocessRequest(BaseModel):
+    # Frontend sends the chosen target column plus any columns the user wants to exclude.
     upload_id: str
     excluded_columns: List[str] = Field(default_factory=list)
     target_column: str
 
 
 class PreprocessResponse(BaseModel):
+    # Backend returns the cleaned shape, feature list, preview rows, and any preprocess notes.
     status: Literal["success"] = "success"
     upload_id: str
     target_column: str
@@ -44,6 +48,7 @@ class PreprocessResponse(BaseModel):
 
 
 class SchemaField(BaseModel):
+    # Each field describes one input the prediction form should render.
     name: str
     dtype: Literal["number", "string", "boolean"] = "string"
     required: bool = True
@@ -53,6 +58,7 @@ class SchemaField(BaseModel):
 
 
 class SchemaResponse(BaseModel):
+    # Schema response lets the frontend build a model-specific prediction form automatically.
     model_id: str
     target_column: str
     feature_columns: List[str]

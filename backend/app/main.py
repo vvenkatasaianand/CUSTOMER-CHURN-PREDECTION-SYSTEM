@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Application entry point: boot FastAPI, middleware, logging, and startup/shutdown hooks."""
+
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -15,6 +17,7 @@ from app.core.errors import register_exception_handlers
 from app.core.logging import configure_logging, get_logger
 
 
+# Resolve settings once at import time so the whole backend uses one consistent config object.
 settings = get_settings()
 configure_logging(settings)
 
@@ -37,6 +40,7 @@ def _ensure_runtime_dirs() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Make sure the folders used by uploads/models/metadata exist before requests arrive.
     _ensure_runtime_dirs()
     logger.info(
         "backend_startup",
@@ -49,6 +53,7 @@ async def lifespan(app: FastAPI):
         },
     )
     yield
+    # Shutdown is lightweight because state is stored on disk, not in a DB connection pool.
     logger.info("backend_shutdown")
 
 
@@ -68,6 +73,7 @@ def _add_middlewares(app: FastAPI) -> None:
     # Request ID + basic timing logs (lightweight, no extra deps)
     @app.middleware("http")
     async def request_context_middleware(request: Request, call_next: Callable[[Request], Response]) -> Response:
+        # Reuse caller request ID when present so frontend/backend logs can be correlated.
         request_id = request.headers.get("x-request-id") or str(uuid.uuid4())
         start = time.perf_counter()
 
@@ -87,6 +93,7 @@ def _add_middlewares(app: FastAPI) -> None:
             )
             raise
 
+        # Add duration and request ID to every successful response for easier debugging.
         elapsed_ms = int((time.perf_counter() - start) * 1000)
         response.headers["x-request-id"] = request_id
 
@@ -104,6 +111,7 @@ def _add_middlewares(app: FastAPI) -> None:
 
 
 def create_app() -> FastAPI:
+    # The app factory keeps startup logic testable and avoids global side effects elsewhere.
     app = FastAPI(
         title=settings.app_name,
         version=settings.app_version,
@@ -122,4 +130,5 @@ def create_app() -> FastAPI:
     return app
 
 
+# Export the ASGI app object used by Uvicorn.
 app = create_app()

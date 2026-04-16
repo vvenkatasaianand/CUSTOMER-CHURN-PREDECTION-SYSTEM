@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Service layer that turns a preprocessed dataset into a persisted trained model."""
+
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -33,7 +35,7 @@ class TrainingService:
             if progress_cb is not None:
                 progress_cb(pct, msg)
 
-        # Validate preprocess metadata exists (ensures upload exists too)
+        # Training only works on a dataset that already passed the preprocess step.
         _emit(5, "Validating preprocessing metadata")
         prep = self.metadata_store.read_preprocess_metadata(req.upload_id)
         if prep is None:
@@ -79,7 +81,7 @@ class TrainingService:
         _emit(10, "Loading processed dataset")
         df = self.dataset_store.load_processed_dataframe(processed_path)
 
-        # Basic sanity checks
+        # Basic sanity checks protect against mismatched metadata or missing files on disk.
         _emit(15, "Running dataset checks")
         missing_cols = [c for c in ([target_column] + feature_columns) if c not in df.columns]
         if missing_cols:
@@ -90,7 +92,7 @@ class TrainingService:
                 details={"missing": missing_cols},
             )
 
-        # Train a robust pipeline (preprocess + xgboost) so inference matches training
+        # Train one persisted pipeline that bundles preprocessing + model so inference matches training exactly.
         model_id = new_id(prefix="mdl")
         model_name = (req.model_name or "xgboost").lower().strip()
         if model_name != "xgboost":
@@ -107,6 +109,7 @@ class TrainingService:
         try:
             _emit(20, "Preparing training data")
             _emit(25, "Starting training")
+            # Delegate the actual ML work to the trainer helper so this service stays orchestration-focused.
             trained = train_xgb_pipeline(
                 X=X,
                 y=y,
@@ -133,11 +136,11 @@ class TrainingService:
                 details={"error": str(e)},
             )
 
-        # Persist model artifact
+        # Persist the fitted sklearn pipeline so later prediction requests can reuse it directly.
         _emit(92, "Saving model artifact")
         artifact_path = self.model_store.save_model(model_id=model_id, model_object=trained.pipeline)
 
-        # Build response metrics
+        # Convert raw floats into the API response schema used by the frontend metrics cards.
         _emit(96, "Building metrics")
         metrics_dict = format_metrics(trained.metrics)
         metrics = TrainingMetrics(**metrics_dict)
@@ -149,7 +152,7 @@ class TrainingService:
             for f, w in trained.feature_importance
         ]
 
-        # Persist metadata needed for /schema and /predict (survives restarts)
+        # Persist metadata needed for /schema, /predict, and summary endpoints across restarts.
         _emit(98, "Writing model metadata")
         model_metadata: Dict[str, Any] = {
             "model_id": model_id,
@@ -175,6 +178,7 @@ class TrainingService:
 
         _emit(99, "Generating dataset summary")
         try:
+            # Precompute the dataset summary once so later UI screens can reload it instantly.
             insights = InsightsService(
                 settings=self.settings,
                 dataset_store=self.dataset_store,
@@ -201,7 +205,9 @@ class TrainingService:
         )
 
     async def train_model(self, req: TrainRequest) -> TrainResponse:
+        # Async wrapper exists for API symmetry even though the core implementation is synchronous.
         return self._train_model(req)
 
     def train_model_with_progress(self, req: TrainRequest, progress_cb: Callable[[int, str], None]) -> TrainResponse:
+        # Streaming endpoint calls this version so the route can emit progress updates.
         return self._train_model(req, progress_cb)

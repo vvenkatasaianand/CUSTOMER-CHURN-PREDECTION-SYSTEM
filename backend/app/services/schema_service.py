@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Service that exposes the saved model schema for dynamic prediction-form generation."""
+
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
@@ -17,6 +19,7 @@ class SchemaService:
     metadata_store: MetadataStore
 
     def get_model_schema(self, model_id: str) -> SchemaResponse:
+        # Everything needed for schema lookup lives in model metadata written after training.
         meta = self.metadata_store.read_model_metadata(model_id)
         if meta is None:
             raise AppError(
@@ -33,6 +36,7 @@ class SchemaService:
         # schema format produced by trainer: { "fields": [ {name, dtype, required, allowed_values, example, description} ] }
         schema_fields = schema.get("fields") if isinstance(schema, dict) else None
         if isinstance(schema_fields, list):
+            # Rehydrate raw dict metadata into typed API schema objects.
             for f in schema_fields:
                 if not isinstance(f, dict) or "name" not in f:
                     continue
@@ -47,7 +51,7 @@ class SchemaService:
                     )
                 )
         else:
-            # Fallback: basic schema from feature_columns
+            # Fallback: still let prediction work even if rich schema metadata is missing.
             for name in feature_columns:
                 fields.append(SchemaField(name=name, dtype="string", required=True))
 

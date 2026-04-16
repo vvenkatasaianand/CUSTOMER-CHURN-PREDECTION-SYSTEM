@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Builds dataset and training summaries, mixing computed stats with optional LLM narration."""
+
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -36,6 +38,7 @@ class InsightsService:
     model_store: ModelStore
 
     async def dataset_summary(self, upload_id: str) -> DatasetSummaryResponse:
+        # Dataset summary depends on preprocess metadata because that metadata defines target/excluded columns.
         prep = self.metadata_store.read_preprocess_metadata(upload_id)
         if prep is None:
             raise AppError(
@@ -47,6 +50,7 @@ class InsightsService:
         cached = prep.get("dataset_summary")
         if isinstance(cached, dict):
             try:
+                # Reuse cached summaries to avoid repeated LLM calls for the same dataset.
                 return DatasetSummaryResponse(**cached)
             except Exception:
                 pass
@@ -54,6 +58,7 @@ class InsightsService:
         return self.build_dataset_summary(upload_id)
 
     def build_dataset_summary(self, upload_id: str) -> DatasetSummaryResponse:
+        # This method recomputes the full dataset summary from saved preprocess output.
         prep = self.metadata_store.read_preprocess_metadata(upload_id)
         if prep is None:
             raise AppError(
@@ -90,6 +95,7 @@ class InsightsService:
         excluded = set([str(x) for x in (prep.get("excluded_columns") or []) if x])
         if target_column in excluded:
             excluded.remove(target_column)
+        # Summary should reflect the actual training view of the dataset, not excluded columns.
         df_summary = df.drop(columns=list(excluded), errors="ignore")
 
         stats, patterns, risks = self._build_dataset_insights(
@@ -124,6 +130,7 @@ class InsightsService:
         )
 
     async def training_summary(self, model_id: str) -> TrainingSummaryResponse:
+        # Training summaries are generated entirely from saved model metadata.
         meta = self.metadata_store.read_model_metadata(model_id)
         if meta is None:
             raise AppError(
@@ -139,6 +146,7 @@ class InsightsService:
             for x in fi_raw
             if isinstance(x, dict) and x.get("feature") is not None
         ]
+        # Keep only the top few features because the UI summary is meant to be read quickly.
         top_features = sorted(top_features, key=lambda x: x.importance, reverse=True)[:5]
 
         risks = self._training_risks(metrics)
@@ -175,6 +183,7 @@ class InsightsService:
         total_cells = max(1, rows * cols)
         missing_pct = float(missing_cells / total_cells)
 
+        # These computed stats are the factual base used both by the UI and by the LLM prompt.
         target_series = df[target_column]
         class_balance = self._class_balance(target_series)
 
@@ -238,6 +247,7 @@ class InsightsService:
         return None
 
     def _detect_patterns(self, df: pd.DataFrame, target_column: str) -> List[str]:
+        # Keep this heuristic on purpose: it surfaces interesting patterns without pretending to be causal analysis.
         patterns: List[str] = []
         target_num = self._target_as_numeric(df[target_column])
         overall_rate = None
@@ -247,7 +257,7 @@ class InsightsService:
             except Exception:
                 overall_rate = None
 
-        # Numeric correlations
+        # Numeric correlations give a quick sense of directional relationship with the target.
         if target_num is not None:
             numeric_cols = [
                 c
@@ -267,7 +277,7 @@ class InsightsService:
             for col, corr in corrs[:3]:
                 patterns.append(f"{col} correlates with target at {corr:.2f}.")
 
-        # Categorical uplift patterns
+        # For categorical columns, compare each common category's churn rate to the overall churn rate.
         if overall_rate is not None:
             cat_cols = [
                 c
@@ -306,6 +316,7 @@ class InsightsService:
         risks: List[str] = []
         excluded = excluded or set()
 
+        # These checks flag common data quality/model quality problems for student projects.
         if rows < 100:
             risks.append(f"Small dataset size (rows={rows}) may reduce generalization.")
 
@@ -346,6 +357,7 @@ class InsightsService:
         return risks[:5]
 
     def _training_risks(self, metrics: Dict[str, Any]) -> List[str]:
+        # Convert numeric metrics into plain-language warnings the UI can show directly.
         risks: List[str] = []
         acc = (metrics.get("accuracy") or {}).get("value")
         recall = (metrics.get("recall") or {}).get("value")
@@ -382,6 +394,7 @@ class InsightsService:
         def _word_count(text: str) -> int:
             return len([w for w in text.strip().split() if w])
 
+        # Only pass structured facts so the LLM is constrained to describe what we already computed.
         facts = {
             "rows": stats.rows,
             "cols": stats.cols,
@@ -414,6 +427,7 @@ class InsightsService:
             f"FACTS={facts}"
         )
 
+        # Fallback text keeps the feature usable even when the LLM is disabled or malformed.
         fallback_summary = (
             f"Dataset has {stats.rows} rows and {stats.cols} columns with target '{stats.target_column}'. "
             f"Overall missing rate is {stats.missing_pct:.2%}, and class balance is {', '.join([f'{c.label}:{c.pct:.0%}' for c in stats.class_balance]) or 'unknown'}. "
@@ -458,6 +472,7 @@ class InsightsService:
             summary: str
             metrics_summary: str
 
+        # Training summary prompt also stays strictly grounded in saved metrics and top features.
         facts = {
             "model_name": model_name,
             "target": target,

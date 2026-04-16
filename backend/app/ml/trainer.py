@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Training helper that normalizes labels, fits XGBoost, and computes evaluation artifacts."""
+
 from dataclasses import dataclass
 import inspect
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -44,7 +46,7 @@ def _normalize_target(y: pd.Series) -> pd.Series:
         return y.astype(int)
 
     if pd.api.types.is_numeric_dtype(y):
-        # If already 0/1 or close
+        # Numeric targets are assumed to already represent binary labels.
         return y.astype(int)
 
     # Strings / objects
@@ -65,7 +67,7 @@ def _normalize_target(y: pd.Series) -> pd.Series:
     }
     mapped = s.map(mapping)
     if mapped.isna().any():
-        # If still contains unknowns, fail clearly
+        # Fail fast when labels are unfamiliar; silent guessing here would poison the model.
         unknown = sorted(set(s[mapped.isna()].unique().tolist()))[:10]
         raise AppError(
             "Target column contains unsupported labels. Use a binary target (0/1 or Yes/No).",
@@ -104,7 +106,7 @@ def train_xgb_pipeline(
 
     y_norm = _normalize_target(y)
 
-    # Stratify only if both classes exist
+    # Stratification keeps the train/test split balanced across the two churn classes.
     unique = sorted(y_norm.unique().tolist())
     if len(unique) != 2:
         raise AppError(
@@ -132,6 +134,7 @@ def train_xgb_pipeline(
     prep_pct = min(start_pct + 1, end_pct)
     _emit(prep_pct, "Preparing training pipeline")
 
+    # XGBoost training callbacks let the streaming endpoint show progress in the UI.
     class _ProgressCallback(TrainingCallback):
         def __init__(self, total_rounds: int) -> None:
             self.total_rounds = max(1, int(total_rounds))
@@ -165,7 +168,7 @@ def train_xgb_pipeline(
     pipeline.fit(X_train, y_train, **fit_params)
     _emit(end_pct, "Model fit complete")
 
-    # Predictions
+    # Evaluate on the held-out test split so metrics reflect unseen rows.
     y_pred = pipeline.predict(X_test)
     try:
         y_prob = pipeline.predict_proba(X_test)[:, 1]
@@ -173,7 +176,7 @@ def train_xgb_pipeline(
         # Fallback if predict_proba unavailable (should be available for XGBClassifier)
         y_prob = None
 
-    # Metrics
+    # Collect the main binary-classification metrics used in the UI and report.
     metrics: Dict[str, float] = {
         "accuracy": float(accuracy_score(y_test, y_pred)),
         "precision": float(precision_score(y_test, y_pred, zero_division=0)),
@@ -231,6 +234,7 @@ def train_xgb_pipeline(
                     totals[col] += float(importances[idx])
                     idx += 1
             elif name == "cat":
+                # One-hot encoding expands one source column into many model columns; sum them back together.
                 onehot = None
                 if hasattr(transformer, "named_steps"):
                     onehot = transformer.named_steps.get("onehot")
@@ -252,6 +256,7 @@ def train_xgb_pipeline(
 
     feature_importance = aggregate_feature_importance()
 
+    # Persist the input schema alongside the model so prediction forms can be built automatically.
     schema = {"fields": build_schema(X).fields}
 
     return TrainArtifacts(

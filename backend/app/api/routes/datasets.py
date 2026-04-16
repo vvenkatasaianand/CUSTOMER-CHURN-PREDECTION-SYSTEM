@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Dataset-facing HTTP routes: upload raw data, preprocess it, and summarize it."""
+
 from fastapi import APIRouter, Depends, File, UploadFile
 from starlette import status
 
@@ -17,10 +19,12 @@ router = APIRouter()
 
 
 def _validate_upload_file(file: UploadFile, settings: Settings) -> None:
+    # Reject empty uploads before spending time on storage/parsing.
     if not file or not file.filename:
         raise AppError("No file uploaded", status_code=status.HTTP_400_BAD_REQUEST, code="file_missing")
 
     filename = file.filename.lower().strip()
+    # Keep accepted formats narrow so downstream parsing is predictable.
     if not (filename.endswith(".csv") or filename.endswith(".json")):
         raise AppError(
             "Unsupported file type. Please upload a .csv or .json file.",
@@ -34,12 +38,14 @@ def _validate_upload_file(file: UploadFile, settings: Settings) -> None:
 
 
 def get_dataset_service(settings: Settings = Depends(get_settings)) -> DatasetService:
+    # Build request-scoped service objects from the current application settings.
     dataset_store = DatasetStore(settings=settings)
     metadata_store = MetadataStore(settings=settings)
     return DatasetService(settings=settings, dataset_store=dataset_store, metadata_store=metadata_store)
 
 
 def get_insights_service(settings: Settings = Depends(get_settings)) -> InsightsService:
+    # Dataset summaries need access to dataset files, metadata, and sometimes model metadata.
     dataset_store = DatasetStore(settings=settings)
     metadata_store = MetadataStore(settings=settings)
     model_store = ModelStore(settings=settings)
@@ -64,6 +70,7 @@ async def upload_dataset(
     - Frontend expects POST /upload returning DatasetInfo:
       { upload_id, filename, shape, columns[{name,type,sample_values,null_count,unique_count}] }
     """
+    # Route-level validation keeps obvious bad requests away from the service layer.
     _validate_upload_file(file, settings)
     return await svc.upload_dataset(file)
 
@@ -82,6 +89,7 @@ async def preprocess_dataset(
     - Response includes:
       { status, shape, preview, target_column, feature_columns }
     """
+    # Service handles all dataset checks and writes the processed dataset/metadata to disk.
     return await svc.preprocess_dataset(request)
 
 
@@ -94,4 +102,5 @@ async def dataset_summary(
     Generate an overall dataset summary (LLM-assisted with safe fallbacks).
     Requires preprocessing to have selected a target column.
     """
+    # Summary is generated from saved preprocess metadata so the UI can reload it later.
     return await svc.dataset_summary(upload_id)

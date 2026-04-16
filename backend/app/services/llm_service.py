@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Very small wrapper around Ollama's generate API with JSON-only responses."""
+
 import json
 import urllib.request
 from dataclasses import dataclass
@@ -17,6 +19,7 @@ class LLMService:
     settings: Settings
 
     def is_enabled(self) -> bool:
+        # Feature flag allows the rest of the backend to keep working without Ollama.
         return bool(self.settings.llm_enabled)
 
     def model_name(self) -> str:
@@ -31,6 +34,7 @@ class LLMService:
             logger.info("llm_disabled")
             return None
 
+        # Force deterministic-ish JSON output so calling services can validate and trust the shape.
         payload = {
             "model": self.settings.ollama_model,
             "prompt": prompt,
@@ -65,6 +69,7 @@ class LLMService:
             if not text:
                 logger.warning("llm_empty_response_field")
                 return None
+            # Ollama returns the model text inside "response"; the project expects that text to itself be JSON.
             return json.loads(text)
         except Exception as exc:
             logger.exception("llm_generate_failed", extra={"error_type": type(exc).__name__})

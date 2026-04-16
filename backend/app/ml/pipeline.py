@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Helpers for building the training/inference pipeline and the schema used by the UI."""
+
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -21,6 +23,7 @@ class BuiltSchema:
 
 
 def _infer_dtype(series: pd.Series) -> str:
+    # UI schema only needs a small set of input types, not pandas' full dtype vocabulary.
     if pd.api.types.is_bool_dtype(series):
         return "boolean"
     if pd.api.types.is_numeric_dtype(series):
@@ -29,7 +32,7 @@ def _infer_dtype(series: pd.Series) -> str:
 
 
 def _allowed_values(series: pd.Series, max_unique: int = 25) -> Optional[List[str]]:
-    # For low-cardinality string columns, expose allowed values (helps UI dropdown)
+    # For low-cardinality string columns, expose allowed values so the UI can render dropdowns.
     try:
         if pd.api.types.is_numeric_dtype(series) or pd.api.types.is_bool_dtype(series):
             return None
@@ -42,6 +45,7 @@ def _allowed_values(series: pd.Series, max_unique: int = 25) -> Optional[List[st
 
 
 def build_schema(X: pd.DataFrame) -> BuiltSchema:
+    # Convert dataframe columns into a lightweight schema that the React form can render.
     fields: List[Dict[str, Any]] = []
     for col in X.columns.tolist():
         s = X[col]
@@ -79,6 +83,7 @@ def build_xgb_pipeline(X: pd.DataFrame, random_seed: int) -> Tuple[Pipeline, Dic
     - categorical: impute most_frequent + one-hot (ignore unknowns)
     - model: XGBoost classifier
     """
+    # Split columns by type so preprocessing can handle numeric and categorical features differently.
     numeric_features = [c for c in X.columns if pd.api.types.is_numeric_dtype(X[c])]
     bool_features = [c for c in X.columns if pd.api.types.is_bool_dtype(X[c])]
     # Treat bools as categorical or numeric? We'll treat as categorical for stability.
@@ -86,12 +91,14 @@ def build_xgb_pipeline(X: pd.DataFrame, random_seed: int) -> Tuple[Pipeline, Dic
     # ensure bool columns are included in categorical_features (already)
     _ = bool_features  # kept for readability/future branching
 
+    # Numeric pipeline only needs imputation because tree models handle scaling well enough here.
     numeric_transformer = Pipeline(
         steps=[
             ("imputer", SimpleImputer(strategy="median")),
         ]
     )
 
+    # Categorical pipeline fills missing labels, then one-hot encodes them for XGBoost.
     categorical_transformer = Pipeline(
         steps=[
             ("imputer", SimpleImputer(strategy="most_frequent")),
@@ -102,6 +109,7 @@ def build_xgb_pipeline(X: pd.DataFrame, random_seed: int) -> Tuple[Pipeline, Dic
         ]
     )
 
+    # ColumnTransformer applies the right preprocessing branch to each feature group.
     preprocessor = ColumnTransformer(
         transformers=[
             ("num", numeric_transformer, numeric_features),
@@ -111,6 +119,7 @@ def build_xgb_pipeline(X: pd.DataFrame, random_seed: int) -> Tuple[Pipeline, Dic
         sparse_threshold=0.0,
     )
 
+    # Hyperparameters are fixed here to keep the student project reproducible and easy to explain.
     model = XGBClassifier(
         n_estimators=300,
         max_depth=4,
@@ -123,6 +132,7 @@ def build_xgb_pipeline(X: pd.DataFrame, random_seed: int) -> Tuple[Pipeline, Dic
         n_jobs=1,  # safer default for student machines; can be configured later
     )
 
+    # Bundle preprocessing and model together so training and prediction always stay in sync.
     pipe = Pipeline(steps=[("preprocess", preprocessor), ("model", model)])
 
     meta: Dict[str, Any] = {

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Disk-backed JSON metadata store for uploads, preprocess runs, and trained models."""
+
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -17,6 +19,7 @@ class MetadataStore:
 
     # ---- Upload metadata ----
     def _upload_meta_path(self, upload_id: str) -> Path:
+        # Separate subfolders keep upload, preprocess, and model metadata logically distinct on disk.
         return safe_join(Path(self.settings.metadata_dir), "uploads", f"{upload_id}.json")
 
     def write_upload_metadata(self, upload_id: str, data: Dict[str, Any]) -> None:
@@ -57,6 +60,7 @@ class MetadataStore:
         Ensure metadata subfolders exist.
         Called indirectly by atomic_write_json() which creates parents, but kept for clarity.
         """
+        # This helper is mostly explicit documentation; writes already create parents automatically.
         for sub in ("uploads", "preprocess", "models"):
             p = safe_join(Path(self.settings.metadata_dir), sub)
             p.mkdir(parents=True, exist_ok=True)
