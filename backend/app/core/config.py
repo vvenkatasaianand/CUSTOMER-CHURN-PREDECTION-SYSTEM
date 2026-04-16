@@ -52,7 +52,7 @@ class Settings(BaseSettings):
     )
 
     # App
-    app_name: str = Field(default="Churn Prediction Backend", alias="APP_NAME")
+    app_name: str = Field(default="CUSTOMER CHURN PREDICTION SYSTEM - Backend", alias="APP_NAME")
     app_version: str = Field(default="1.0.0", alias="APP_VERSION")
     environment: str = Field(default="development", alias="ENVIRONMENT")  # development|staging|production
     debug: bool = Field(default=False, alias="DEBUG")

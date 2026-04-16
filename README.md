@@ -243,7 +243,7 @@ pip install -r requirements.txt
 3. Create `backend/.env` (optional):
 
 ```env
-APP_NAME=Churn Prediction Backend
+APP_NAME=CUSTOMER CHURN PREDICTION SYSTEM - Backend
 ENVIRONMENT=development
 DEBUG=false
 HOST=0.0.0.0
@@ -359,7 +359,7 @@ There are no committed env files in this repo. Create them as needed:
 Backend (optional `.env` in `backend/`, loaded by `backend/app/core/config.py`):
 
 ```env
-APP_NAME=Churn Prediction Backend
+APP_NAME=CUSTOMER CHURN PREDICTION SYSTEM - Backend
 APP_VERSION=1.0.0
 ENVIRONMENT=development
 DEBUG=false
@@ -483,17 +483,14 @@ python backend\scripts\generate_model_plots.py --data "datasets\telecom.csv" --t
 Common issues and fixes:
 
 - **Backend not starting**
-
   - Check Python version and dependencies
   - Ensure port `8000` is free or change `PORT`
 
 - **Frontend API errors (CORS or 404)**
-
   - Set `VITE_BACKEND_URL` or `VITE_API_BASE_URL` correctly
   - Ensure backend is running and reachable
 
 - **Ollama not responding**
-
   - Start the Ollama service and verify with `ollama ps`
   - Confirm `OLLAMA_BASE_URL` is correct (default `http://localhost:11434`)
 

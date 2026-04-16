@@ -10,7 +10,7 @@ router = APIRouter()
 
 @router.get("/", response_model=MessageResponse)
 def root() -> MessageResponse:
-    return MessageResponse(message="Churn Prediction Backend is running")
+    return MessageResponse(message="CUSTOMER CHURN PREDICTION SYSTEM - Backend is running")
 
 
 @router.get("/health", response_model=HealthResponse)
